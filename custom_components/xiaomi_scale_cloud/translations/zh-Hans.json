@@ -10,12 +10,8 @@
         }
       },
       "qr": {
-        "title": "用米家 App 扫码登录",
-        "description": "打开米家 App 的「扫一扫」，扫码确认后点击「已确认登录」。\n\n![登录二维码]({qr_url})\n\n[打开登录页面]({login_url})\n\n{status}",
-        "menu_options": {
-          "qr_check": "已确认登录",
-          "qr_refresh": "刷新二维码"
-        }
+        "title": "扫码登录米家",
+        "description": "在登录页面扫码确认，完成后此处会自动继续。\n\n[打开登录页面]({login_url})"
       },
       "reauth_confirm": {
         "title": "重新登录米家",
@@ -31,9 +27,6 @@
     },
     "error": {
       "cannot_connect": "无法连接小米云，请检查网络并稍后重试。",
-      "not_scanned": "尚未收到扫码确认，请先在米家确认登录，再提交。",
-      "expired": "二维码已过期，已生成新二维码，请重新扫码。",
-      "wrong_account": "请使用原来的米家账号；可重新生成二维码后再扫码。",
       "no_measurements": "未找到这台设备的称重记录。请确认选中的是秤，并先在米家同步一次称重；也可以重新选择设备。",
       "authentication_failed": "小米登录已失效或无权限。请退出本次配置，使用拥有该设备的账号重新扫码登录。",
       "unsupported_response": "接口返回了无法解析的数据，该设备或报告格式可能尚不支持。请重新选择设备或稍后重试。"
@@ -45,7 +38,8 @@
       "reauth_successful": "重新登录成功。",
       "no_devices": "此地区没有返回可选择的设备。请确认登录账号和地区。",
       "authentication_failed": "小米登录已失效或无权限。请退出本次配置，使用拥有该设备的账号重新扫码登录。",
-      "unsupported_response": "接口返回了无法解析的数据，该设备或报告格式可能尚不支持。请重新选择设备或稍后重试。"
+      "unsupported_response": "接口返回了无法解析的数据，该设备或报告格式可能尚不支持。请重新选择设备或稍后重试。",
+      "ha_url_missing": "请先在 HA 的“设置 → 系统 → 网络”中设置 Home Assistant 地址，再重新添加集成。"
     }
   },
   "options": {

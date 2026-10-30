@@ -8,10 +8,13 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import UnknownFlow
+from homeassistant.helpers.network import get_url, NoURLAvailableError
 
 from .api import QrLogin, ScaleClient, NoMeasurements
-from ._vendor.errors import S400Error, LoginExpired, AuthenticationError, NetworkError, ProtocolError
+from ._vendor.errors import S400Error, LoginExpired, LoginCancelled, AuthenticationError, NetworkError, ProtocolError
 from .const import DOMAIN, DEFAULT_INTERVAL, REGIONS
+from .web_login import create_session, QR_LIFETIME
 
 
 LOGGER = logging.getLogger(__name__)
@@ -32,16 +35,13 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.device_error = "no_measurements"
         self._poll_task = None
         self._poll_error = None
+        self._web_session = None
 
     async def async_step_user(self, user_input=None):
         errors = {}
         if user_input is not None:
             self.region = user_input["region"]
-            try:
-                await self._new_qr()
-                return await self.async_step_qr()
-            except S400Error:
-                errors["base"] = "cannot_connect"
+            return await self.async_step_qr()
         return self.async_show_form(step_id="user", data_schema=vol.Schema({
             vol.Required("region", default=self.region): vol.In(REGIONS),
         }), errors=errors)
@@ -53,6 +53,11 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception:
             await self.hass.async_add_executor_job(candidate.close)
             raise
+        if self._web_session and (
+            not self._web_session.alive() or self._web_session.status != "starting"
+        ):
+            await self.hass.async_add_executor_job(candidate.close)
+            raise LoginCancelled()
         previous = self.qr
         previous_task = self._poll_task
         self.qr = candidate
@@ -62,6 +67,9 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             previous_task.cancel()
         elif previous:
             await self.hass.async_add_executor_job(previous.close)
+        if self._web_session:
+            candidate.deadline = min(candidate.deadline, time.monotonic() + QR_LIFETIME)
+            self._web_session.status = "pending"
         self._poll_task = self.hass.async_create_background_task(
             self._poll_login(candidate), "xiaomi_scale_cloud QR login"
         )
@@ -70,15 +78,32 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         pending = None
         try:
             while self.qr is qr:
+                if self._web_session and not self._web_session.polling_allowed():
+                    return
                 pending = self.hass.async_add_executor_job(qr.poll)
                 # 取消后台任务不会终止线程，需等当前 HTTP 请求退出再关闭会话。
                 result = await asyncio.shield(pending)
                 pending = None
                 if self.qr is not qr:
                     return
+                if self._web_session and not self._web_session.polling_allowed():
+                    return
+                if self._web_session and time.monotonic() >= qr.deadline:
+                    raise LoginExpired()
                 if result:
+                    if self.reauth_entry and result["userId"] != self.reauth_entry.data["credential"]["userId"]:
+                        if self._web_session:
+                            self._web_session.status = "wrong_account"
+                        return
                     self.credential = result
                     LOGGER.debug("QR login confirmed")
+                    if self._web_session:
+                        self._web_session.status = "success"
+                        try:
+                            await self.hass.config_entries.flow.async_configure(self.flow_id)
+                        except UnknownFlow:
+                            self.credential = None
+                            self._web_session.expire()
                     return
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
@@ -91,51 +116,32 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except S400Error as err:
             if self.qr is qr:
                 self._poll_error = err
+                if self._web_session:
+                    self._web_session.status = "expired" if isinstance(err, LoginExpired) else "error"
             LOGGER.debug("QR login polling ended: %s", type(err).__name__)
         finally:
             await self.hass.async_add_executor_job(qr.close)
 
-    def _qr_menu(self, message=""):
-        return self.async_show_menu(
-            step_id="qr",
-            menu_options=["qr_check", "qr_refresh"],
-            description_placeholders={
-                "qr_url": self.qr.qr_url,
-                "login_url": self.qr.login_url,
-                "status": message,
-            },
+    async def async_step_qr(self, user_input=None):
+        if self.credential:
+            return self.async_external_step_done(next_step_id="login_complete")
+        if self._web_session is None or not self._web_session.alive():
+            self._web_session = create_session(self.hass, self)
+        try:
+            login_url = get_url(self.hass, prefer_external=True).rstrip("/") + self._web_session.url
+        except NoURLAvailableError:
+            return self.async_abort(reason="ha_url_missing")
+        return self.async_external_step(
+            step_id="qr", url=login_url,
+            description_placeholders={"login_url": login_url},
         )
 
-    async def async_step_qr(self, user_input=None):
-        return self._qr_menu()
-
-    async def async_step_qr_refresh(self, user_input=None):
-        try:
-            await self._new_qr()
-        except S400Error:
-            return self._qr_menu("刷新失败，请检查网络后重试。")
-        return self._qr_menu()
-
-    async def async_step_qr_check(self, user_input=None):
-        # 按钮只检查后台结果，不再启动另一条登录轮询。
-        if self._poll_task is not None and not self._poll_task.done():
-            await asyncio.wait({self._poll_task}, timeout=0.2)
-        if self.credential:
-            if self.reauth_entry and self.credential["userId"] != self.reauth_entry.data["credential"]["userId"]:
-                self.credential = None
-                return self._qr_menu("请使用原来的米家账号。点击「刷新二维码」后重新扫码。")
-            if self.reauth_entry:
-                return await self._finish_device()
-            return await self._load_devices()
-        if isinstance(self._poll_error, LoginExpired) or time.monotonic() >= self.qr.deadline:
-            try:
-                await self._new_qr()
-            except S400Error:
-                return self._qr_menu("二维码已过期，刷新失败，请稍后重试。")
-            return self._qr_menu("二维码已过期，请扫描新二维码。")
-        if self._poll_error:
-            return self._qr_menu("登录连接已中断，请点击「刷新二维码」重试。")
-        return self._qr_menu("尚未收到登录确认，请先在米家 App 中确认。")
+    async def async_step_login_complete(self, user_input=None):
+        if not self.credential:
+            return self.async_abort(reason="authentication_failed")
+        if self.reauth_entry:
+            return await self._finish_device()
+        return await self._load_devices()
 
     async def _load_devices(self):
         client = ScaleClient(self.credential, self.region, "")
@@ -201,10 +207,6 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth_confirm(self, user_input=None):
         if user_input is not None:
-            try:
-                await self._new_qr()
-            except S400Error:
-                return self.async_show_form(step_id="reauth_confirm", data_schema=vol.Schema({}), errors={"base": "cannot_connect"})
             return await self.async_step_qr()
         return self.async_show_form(step_id="reauth_confirm", data_schema=vol.Schema({}))
 
@@ -215,6 +217,12 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @callback
     def async_remove(self):
+        if self._web_session:
+            session = self._web_session
+            session.stop()
+            # 成功页短暂保留状态供新窗口读取，之后清除临时入口。
+            session.timer.cancel()
+            session.timer = self.hass.loop.call_later(30, session.expire)
         qr = self.qr
         self.qr = None
         self.credential = None

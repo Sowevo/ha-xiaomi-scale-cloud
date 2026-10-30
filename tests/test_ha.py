@@ -19,6 +19,7 @@ from custom_components.xiaomi_scale_cloud.sensor import ScaleSensor, Measurement
 from custom_components.xiaomi_scale_cloud.button import RefreshButton
 from custom_components.xiaomi_scale_cloud._vendor.errors import NetworkError, AuthenticationError, ProtocolError
 from custom_components.xiaomi_scale_cloud.api import NoMeasurements
+from custom_components.xiaomi_scale_cloud.web_login import SESSION_KEY
 from test_api import record
 
 
@@ -27,6 +28,14 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.hass = HomeAssistant(self.directory.name)
         self.hass.config_entries = ConfigEntries(self.hass, {})
+        self.hass.http = Mock()
+        url_patcher = patch("custom_components.xiaomi_scale_cloud.config_flow.get_url", return_value="http://homeassistant.local:8123")
+        url_patcher.start()
+        self.addCleanup(url_patcher.stop)
+        self.advance = AsyncMock()
+        patcher = patch.object(type(self.hass.config_entries.flow), "async_configure", self.advance)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.entry = ConfigEntry(domain="xiaomi_scale_cloud", title="测试", version=1, minor_version=1,
             source="user", unique_id="test", options={}, discovery_keys=MappingProxyType({}), subentries_data=[],
             data={"credential": {"userId": "123", "passToken": "fake"}, "region": "cn", "model": "xiaomi.scales.ms110",
@@ -35,6 +44,8 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
             await self.hass.config_entries.async_add(self.entry)
 
     async def asyncTearDown(self):
+        for session in list(self.hass.data.get(SESSION_KEY, {}).values()):
+            session.expire()
         await self.hass.async_stop(force=True)
         self.directory.cleanup()
 
@@ -78,8 +89,14 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         with patch("custom_components.xiaomi_scale_cloud.config_flow.QrLogin", return_value=qr), patch("custom_components.xiaomi_scale_cloud.config_flow.ScaleClient", return_value=client):
             initial = await flow.async_step_user({"region": "cn"})
             self.assertEqual(initial["step_id"], "qr")
-            self.assertIn("qr_url", initial["description_placeholders"])
-            result = await flow.async_step_qr_check()
+            self.assertEqual(initial["type"], "external")
+            self.assertIsNone(flow.qr)
+            await flow._web_session.refresh()
+            await asyncio.wait_for(flow._poll_task, 2)
+            self.advance.assert_awaited_once_with(flow.flow_id)
+            complete = await flow.async_step_qr()
+            self.assertEqual(complete["type"], "external_done")
+            result = await flow.async_step_login_complete()
             self.assertEqual(result["step_id"], "device")
             result = await flow.async_step_device({"device": "test-scale"})
             self.assertEqual(result["type"], "create_entry")
@@ -111,21 +128,26 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
     async def test_unconfirmed_qr_does_not_create_entry(self):
         flow = ScaleConfigFlow()
         flow.hass = self.hass
-        flow.qr = Mock(qr_url="https://account.xiaomi.com/qr", login_url="https://account.xiaomi.com/login", deadline=float("inf"))
-        flow.qr.poll.return_value = None
-        result = await flow.async_step_qr_check()
-        self.assertEqual(result["step_id"], "qr")
-        self.assertIn("尚未收到", result["description_placeholders"]["status"])
+        result = await flow.async_step_qr()
+        self.assertEqual(result["type"], "external")
+        self.assertIsNone(flow.qr)
+        result = await flow.async_step_login_complete()
+        self.assertEqual(result["reason"], "authentication_failed")
+
 
     async def test_reauth_rejects_another_account(self):
         flow = ScaleConfigFlow()
         flow.hass = self.hass
         flow.reauth_entry = self.entry
-        flow.qr = Mock(qr_url="https://account.xiaomi.com/qr", login_url="https://account.xiaomi.com/login", deadline=float("inf"))
-        flow.credential = {"userId": "999", "passToken": "fake"}
-        result = await flow.async_step_qr_check()
-        self.assertIn("原来的米家账号", result["description_placeholders"]["status"])
+        await flow.async_step_qr()
+        qr = Mock(qr_url="https://account.xiaomi.com/qr", deadline=float("inf"))
+        qr.poll.return_value = {"userId": "999", "passToken": "fake"}
+        with patch("custom_components.xiaomi_scale_cloud.config_flow.QrLogin", return_value=qr):
+            await flow._web_session.refresh()
+        await asyncio.wait_for(flow._poll_task, 2)
+        self.assertEqual(flow._web_session.status, "wrong_account")
         self.assertIsNone(flow.credential)
+        self.advance.assert_not_awaited()
 
 
     async def test_new_people_create_entities_once_and_names_keep_ids(self):
@@ -200,50 +222,47 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
     async def test_refresh_button_replaces_qr_and_starts_polling(self):
         flow = ScaleConfigFlow()
         flow.hass = self.hass
-        old = Mock(qr_url="https://account.xiaomi.com/old", login_url="https://account.xiaomi.com/old-login")
-        fresh = Mock(qr_url="https://account.xiaomi.com/new", login_url="https://account.xiaomi.com/new-login")
+        await flow.async_step_qr()
+        old = Mock()
+        fresh = Mock(qr_url="https://account.xiaomi.com/new", deadline=float("inf"))
         fresh.poll.return_value = {"userId": "123", "passToken": "new-fake"}
         flow.qr = old
-        flow.credential = {"userId": "123", "passToken": "fake"}
-        menu = await flow.async_step_qr()
-        self.assertEqual(menu["type"], "menu")
-        self.assertIn("qr_refresh", menu["menu_options"])
         with patch("custom_components.xiaomi_scale_cloud.config_flow.QrLogin", return_value=fresh):
-            result = await flow.async_step_qr_refresh()
-        self.assertEqual(result["description_placeholders"]["qr_url"], fresh.qr_url)
-        fresh.start.assert_called_once()
+            result = await flow._web_session.refresh()
+        self.assertIn(result["status"], ("pending", "success"))
+        self.assertIs(flow.qr, fresh)
         old.close.assert_called_once()
-        old.poll.assert_not_called()
         await asyncio.wait_for(flow._poll_task, 2)
-        fresh.poll.assert_called_once()
+        self.assertEqual(flow._web_session.status, "success")
         self.assertEqual(flow.credential["passToken"], "new-fake")
+
 
     async def test_refresh_failure_preserves_old_qr_and_can_retry(self):
         flow = ScaleConfigFlow()
         flow.hass = self.hass
-        old = Mock(qr_url="https://account.xiaomi.com/old", login_url="https://account.xiaomi.com/login")
+        await flow.async_step_qr()
+        old = Mock(deadline=0, qr_url="https://account.xiaomi.com/old")
         broken = Mock()
         broken.start.side_effect = NetworkError
         flow.qr = old
         with patch("custom_components.xiaomi_scale_cloud.config_flow.QrLogin", return_value=broken):
-            result = await flow.async_step_qr_refresh()
+            result = await flow._web_session.refresh()
         self.assertIs(flow.qr, old)
-        self.assertIn("刷新失败", result["description_placeholders"]["status"])
-        self.assertIn("qr_refresh", result["menu_options"])
+        self.assertEqual(result["status"], "error")
         broken.close.assert_called_once()
-        old.close.assert_not_called()
 
-    async def test_expired_qr_check_replaces_code(self):
+
+    async def test_expired_qr_does_not_refresh_automatically(self):
         flow = ScaleConfigFlow()
         flow.hass = self.hass
-        old = Mock(deadline=0)
-        fresh = Mock(qr_url="https://account.xiaomi.com/new", login_url="https://account.xiaomi.com/login")
-        flow.qr = old
-        with patch("custom_components.xiaomi_scale_cloud.config_flow.QrLogin", return_value=fresh):
-            result = await flow.async_step_qr_check()
-        old.poll.assert_not_called()
-        self.assertEqual(result["description_placeholders"]["qr_url"], fresh.qr_url)
-        self.assertIn("已过期", result["description_placeholders"]["status"])
+        await flow.async_step_qr()
+        flow.qr = Mock(deadline=0)
+        flow._web_session.status = "pending"
+        with patch("custom_components.xiaomi_scale_cloud.config_flow.QrLogin") as factory:
+            result = flow._web_session.snapshot()
+            self.assertEqual(result["status"], "expired")
+            await flow.async_step_qr()
+            factory.assert_not_called()
 
 
     async def test_polling_completes_without_confirmation_button(self):
@@ -253,8 +272,6 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         qr.poll.side_effect = [None, None, {"userId": "123", "passToken": "fake"}]
         with patch("custom_components.xiaomi_scale_cloud.config_flow.QrLogin", return_value=qr):
             await flow._new_qr()
-        menu = await flow.async_step_qr()
-        self.assertEqual(menu["type"], "menu")
         await asyncio.wait_for(flow._poll_task, 2)
         self.assertEqual(flow.credential["userId"], "123")
         self.assertEqual(qr.poll.call_count, 3)

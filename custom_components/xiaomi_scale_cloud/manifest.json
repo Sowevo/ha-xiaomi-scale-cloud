@@ -1,0 +1,17 @@
+{
+  "domain": "xiaomi_scale_cloud",
+  "name": "Xiaomi Scale Cloud",
+  "version": "0.3.1",
+  "config_flow": true,
+  "documentation": "https://github.com/Sowevo/ha-xiaomi-scale-cloud",
+  "iot_class": "cloud_polling",
+  "integration_type": "device",
+  "requirements": [
+    "requests>=2.32.5",
+    "pycryptodome>=3.23.0"
+  ],
+  "codeowners": [
+    "@Sowevo"
+  ],
+  "issue_tracker": "https://github.com/Sowevo/ha-xiaomi-scale-cloud/issues"
+}

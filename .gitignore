@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.venv/
+.env
+session.json
+*history-raw*
+*login*.png
+.DS_Store
+*.zip

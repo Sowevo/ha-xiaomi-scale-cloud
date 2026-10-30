@@ -124,7 +124,7 @@ class QrLogin:
 
     def start(self):
         data = parse_response(request(self.http, "get", "https://account.xiaomi.com/longPolling/loginUrl", params={
-            "_qrsize": "480", "qs": "%3Fsid%3Dxiaomiio%26_json%3Dtrue",
+            "_qrsize": "220", "qs": "%3Fsid%3Dxiaomiio%26_json%3Dtrue",
             "callback": "https://sts.api.io.mi.com/sts", "_hasLogo": "false",
             "sid": "xiaomiio", "serviceParam": "", "_locale": "zh_CN", "_dc": str(int(time.time() * 1000)),
         }))

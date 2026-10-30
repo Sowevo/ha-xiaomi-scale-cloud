@@ -11,9 +11,10 @@
       },
       "qr": {
         "title": "用米家 App 扫码登录",
-        "description": "打开米家 App 的「扫一扫」，扫描下方二维码并确认登录，然后点击「提交」。\n\n![登录二维码]({qr_url})\n\n[无法显示二维码？打开登录页面]({login_url})\n\n二维码过期后，勾选「重新生成二维码」并提交。",
-        "data": {
-          "renew": "重新生成二维码"
+        "description": "打开米家 App 的「扫一扫」，扫码确认后点击「已确认登录」。\n\n![登录二维码]({qr_url})\n\n[打开登录页面]({login_url})\n\n{status}",
+        "menu_options": {
+          "qr_check": "已确认登录",
+          "qr_refresh": "刷新二维码"
         }
       },
       "reauth_confirm": {

@@ -40,40 +40,62 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         }), errors=errors)
 
     async def _new_qr(self):
-        if self.qr:
-            await self.hass.async_add_executor_job(self.qr.close)
-        self.qr = QrLogin()
-        await self.hass.async_add_executor_job(self.qr.start)
+        candidate = QrLogin()
+        try:
+            await self.hass.async_add_executor_job(candidate.start)
+        except Exception:
+            await self.hass.async_add_executor_job(candidate.close)
+            raise
+        previous = self.qr
+        self.qr = candidate
+        self.credential = None
+        if previous:
+            await self.hass.async_add_executor_job(previous.close)
+
+    def _qr_menu(self, message=""):
+        return self.async_show_menu(
+            step_id="qr",
+            menu_options=["qr_check", "qr_refresh"],
+            description_placeholders={
+                "qr_url": self.qr.qr_url,
+                "login_url": self.qr.login_url,
+                "status": message,
+            },
+        )
 
     async def async_step_qr(self, user_input=None):
-        errors = {}
-        if user_input is not None:
+        return self._qr_menu()
+
+    async def async_step_qr_refresh(self, user_input=None):
+        try:
+            await self._new_qr()
+        except S400Error:
+            return self._qr_menu("刷新失败，请检查网络后重试。")
+        return self._qr_menu()
+
+    async def async_step_qr_check(self, user_input=None):
+        try:
+            if time.monotonic() >= self.qr.deadline:
+                await self._new_qr()
+                return self._qr_menu("二维码已过期，请扫描新二维码。")
+            self.credential = await self.hass.async_add_executor_job(self.qr.poll)
+            if not self.credential:
+                return self._qr_menu("尚未收到登录确认，请先在米家 App 中确认。")
+            if self.reauth_entry and self.credential["userId"] != self.reauth_entry.data["credential"]["userId"]:
+                self.credential = None
+                return self._qr_menu("请使用原来的米家账号。点击「刷新二维码」后重新扫码。")
+            await self.hass.async_add_executor_job(self.qr.close)
+            if self.reauth_entry:
+                return await self._finish_device()
+            return await self._load_devices()
+        except LoginExpired:
             try:
-                if user_input.get("renew") or time.monotonic() >= self.qr.deadline:
-                    await self._new_qr()
-                else:
-                    self.credential = await self.hass.async_add_executor_job(self.qr.poll)
-                    if self.credential:
-                        if self.reauth_entry and self.credential["userId"] != self.reauth_entry.data["credential"]["userId"]:
-                            errors["base"] = "wrong_account"
-                            self.credential = None
-                        else:
-                            await self.hass.async_add_executor_job(self.qr.close)
-                            if self.reauth_entry:
-                                return await self._finish_device()
-                            return await self._load_devices()
-                    else:
-                        errors["base"] = "not_scanned"
-            except LoginExpired:
-                try:
-                    await self._new_qr()
-                    errors["base"] = "expired"
-                except S400Error:
-                    errors["base"] = "cannot_connect"
+                await self._new_qr()
             except S400Error:
-                errors["base"] = "cannot_connect"
-        return self.async_show_form(step_id="qr", data_schema=vol.Schema({vol.Optional("renew", default=False): bool}),
-                                    description_placeholders={"qr_url": self.qr.qr_url, "login_url": self.qr.login_url}, errors=errors)
+                return self._qr_menu("二维码已过期，刷新失败，请稍后重试。")
+            return self._qr_menu("二维码已过期，请扫描新二维码。")
+        except S400Error:
+            return self._qr_menu("无法连接小米云，请稍后重试。")
 
     async def _load_devices(self):
         client = ScaleClient(self.credential, self.region, "")

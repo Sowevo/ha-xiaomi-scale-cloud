@@ -43,7 +43,7 @@
 
 1. 打开 **HACS → 右上角菜单 → 自定义仓库**。
 2. 填入仓库地址：https://github.com/Sowevo/ha-xiaomi-scale-cloud 。
-3. 类型选择 **Integration / 集成**，添加后搜索 **Xiaomi Scale Cloud**。
+3. 类型选择 **Integration / 集成**，添加后搜索 **米家体重秤云同步**（也可搜索 Xiaomi Scale Cloud）。
 4. 下载集成，重启 **Home Assistant Core**。
 5. 按下方“配置”完成扫码登录。
 
@@ -60,7 +60,7 @@
 
 ## 配置
 
-1. **设置 → 设备与服务 → 添加集成**，搜索 **Xiaomi Scale Cloud**。
+1. **设置 → 设备与服务 → 添加集成**，搜索 **米家体重秤云同步**（也可搜索 Xiaomi Scale Cloud）。
 2. 选择米家账号所在地区。
 3. 用 **米家 App → 扫一扫**扫描配置页二维码，在手机确认登录，再点 HA 页面的提交。
 4. 从完整设备列表手动选择秤。请同时核对名称和英文型号，昵称不一定包含“秤”。

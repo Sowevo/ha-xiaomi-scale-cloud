@@ -1,7 +1,7 @@
 {
   "domain": "xiaomi_scale_cloud",
-  "name": "Xiaomi Scale Cloud",
-  "version": "0.3.1",
+  "name": "米家体重秤云同步（Xiaomi Scale Cloud）",
+  "version": "0.3.2",
   "config_flow": true,
   "documentation": "https://github.com/Sowevo/ha-xiaomi-scale-cloud",
   "iot_class": "cloud_polling",

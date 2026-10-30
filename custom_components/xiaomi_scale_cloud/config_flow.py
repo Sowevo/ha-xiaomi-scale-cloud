@@ -1,5 +1,7 @@
 """米家二维码登录与设备选择。"""
 
+import asyncio
+import logging
 import time
 
 import voluptuous as vol
@@ -10,6 +12,9 @@ from homeassistant.core import callback
 from .api import QrLogin, ScaleClient, NoMeasurements
 from ._vendor.errors import S400Error, LoginExpired, AuthenticationError, NetworkError, ProtocolError
 from .const import DOMAIN, DEFAULT_INTERVAL, REGIONS
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -25,6 +30,8 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.reports = {}
         self.reauth_entry = None
         self.device_error = "no_measurements"
+        self._poll_task = None
+        self._poll_error = None
 
     async def async_step_user(self, user_input=None):
         errors = {}
@@ -47,10 +54,46 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await self.hass.async_add_executor_job(candidate.close)
             raise
         previous = self.qr
+        previous_task = self._poll_task
         self.qr = candidate
         self.credential = None
-        if previous:
+        self._poll_error = None
+        if previous_task is not None:
+            previous_task.cancel()
+        elif previous:
             await self.hass.async_add_executor_job(previous.close)
+        self._poll_task = self.hass.async_create_background_task(
+            self._poll_login(candidate), "xiaomi_scale_cloud QR login"
+        )
+
+    async def _poll_login(self, qr):
+        pending = None
+        try:
+            while self.qr is qr:
+                pending = self.hass.async_add_executor_job(qr.poll)
+                # 取消后台任务不会终止线程，需等当前 HTTP 请求退出再关闭会话。
+                result = await asyncio.shield(pending)
+                pending = None
+                if self.qr is not qr:
+                    return
+                if result:
+                    self.credential = result
+                    LOGGER.debug("QR login confirmed")
+                    return
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            if pending is not None:
+                try:
+                    await pending
+                except Exception:
+                    pass
+            raise
+        except S400Error as err:
+            if self.qr is qr:
+                self._poll_error = err
+            LOGGER.debug("QR login polling ended: %s", type(err).__name__)
+        finally:
+            await self.hass.async_add_executor_job(qr.close)
 
     def _qr_menu(self, message=""):
         return self.async_show_menu(
@@ -74,28 +117,25 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self._qr_menu()
 
     async def async_step_qr_check(self, user_input=None):
-        try:
-            if time.monotonic() >= self.qr.deadline:
-                await self._new_qr()
-                return self._qr_menu("二维码已过期，请扫描新二维码。")
-            self.credential = await self.hass.async_add_executor_job(self.qr.poll)
-            if not self.credential:
-                return self._qr_menu("尚未收到登录确认，请先在米家 App 中确认。")
+        # 按钮只检查后台结果，不再启动另一条登录轮询。
+        if self._poll_task is not None and not self._poll_task.done():
+            await asyncio.wait({self._poll_task}, timeout=0.2)
+        if self.credential:
             if self.reauth_entry and self.credential["userId"] != self.reauth_entry.data["credential"]["userId"]:
                 self.credential = None
                 return self._qr_menu("请使用原来的米家账号。点击「刷新二维码」后重新扫码。")
-            await self.hass.async_add_executor_job(self.qr.close)
             if self.reauth_entry:
                 return await self._finish_device()
             return await self._load_devices()
-        except LoginExpired:
+        if isinstance(self._poll_error, LoginExpired) or time.monotonic() >= self.qr.deadline:
             try:
                 await self._new_qr()
             except S400Error:
                 return self._qr_menu("二维码已过期，刷新失败，请稍后重试。")
             return self._qr_menu("二维码已过期，请扫描新二维码。")
-        except S400Error:
-            return self._qr_menu("无法连接小米云，请稍后重试。")
+        if self._poll_error:
+            return self._qr_menu("登录连接已中断，请点击「刷新二维码」重试。")
+        return self._qr_menu("尚未收到登录确认，请先在米家 App 中确认。")
 
     async def _load_devices(self):
         client = ScaleClient(self.credential, self.region, "")
@@ -175,8 +215,13 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @callback
     def async_remove(self):
-        if self.qr:
-            self.hass.async_add_executor_job(self.qr.close)
+        qr = self.qr
+        self.qr = None
+        self.credential = None
+        if self._poll_task is not None:
+            self._poll_task.cancel()
+        elif qr:
+            self.hass.async_add_executor_job(qr.close)
 
 
 class ScaleOptionsFlow(config_entries.OptionsFlow):

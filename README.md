@@ -2,7 +2,7 @@
 
 将米家云端称重报告同步为 Home Assistant 传感器。**无需 ESP32、蓝牙代理、bindkey 或单独运行同步服务。**
 
-> 实验版。S400 Pro 自测支持，S400 推测支持，其他设备可自行选择测试。
+> 实验版。S400 Pro 自测支持，S400 推测支持，其他设备可自行选择测试。如果你的设备也能正常使用，欢迎在 [Issues](https://github.com/Sowevo/ha-xiaomi-scale-cloud/issues) 留言，告诉我们设备型号，帮助补充兼容列表。
 
 ## 使用效果
 

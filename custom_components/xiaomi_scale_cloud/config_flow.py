@@ -164,7 +164,13 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if result is not None:
                 return result
             errors["base"] = self.device_error
-        choices = {did: f"{device['name']} · {device['model']} · {did}" for did, device in self.devices.items()}
+        ordered_devices = sorted(
+            self.devices.items(),
+            key=lambda item: not (
+                "秤" in item[1]["name"] or "scale" in item[1]["name"].casefold()
+            ),
+        )
+        choices = {did: f"{device['name']} · {device['model']} · {did}" for did, device in ordered_devices}
         return self.async_show_form(step_id="device", data_schema=vol.Schema({vol.Required("device"): vol.In(choices)}), errors=errors)
 
     async def _finish_device(self):

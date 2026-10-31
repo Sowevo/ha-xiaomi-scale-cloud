@@ -65,6 +65,40 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(weight.available)
         self.assertTrue(RefreshButton(coordinator).available)
 
+    async def test_batch_records_use_source_times_without_poll_duplicates(self):
+        readings = tuple(parse_measurement(record(timestamp=1793398833000 + i * 60000, weight=str(70 + i))) for i in range(4))
+        coordinator = ScaleCoordinator(self.hass, self.entry)
+        coordinator.async_set_updated_data({"1": PersonReport("测试", readings[-1], measurements=readings)})
+        sensor = ScaleSensor(coordinator, "weight", "1")
+        sensor.hass = self.hass
+        sensor.entity_id = "sensor.scale_batch_probe"
+        sensor._last_recorded = readings[0].measured_at
+        events = []
+        self.hass.bus.async_listen("state_changed", events.append)
+        sensor._async_write_ha_state()
+        await self.hass.async_block_till_done()
+        states = [event.data["new_state"] for event in events]
+        self.assertEqual([state.state for state in states], ["71.0", "72.0", "73.0"])
+        self.assertEqual([state.last_updated for state in states], [m.measured_at for m in readings[1:]])
+        self.assertEqual(sensor.native_value, 73)
+        sensor._async_write_ha_state()
+        await self.hass.async_block_till_done()
+        self.assertEqual(len(events), 3)
+
+    async def test_first_add_publishes_latest_without_replaying_old_history(self):
+        readings = tuple(parse_measurement(record(timestamp=1793398833000 + i * 60000)) for i in range(3))
+        coordinator = ScaleCoordinator(self.hass, self.entry)
+        coordinator.async_set_updated_data({"1": PersonReport("测试", readings[-1], measurements=readings)})
+        sensor = ScaleSensor(coordinator, "weight", "1")
+        sensor.hass = self.hass
+        sensor.entity_id = "sensor.scale_initial_probe"
+        events = []
+        self.hass.bus.async_listen("state_changed", events.append)
+        sensor._async_write_ha_state()
+        await self.hass.async_block_till_done()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].data["new_state"].last_updated, readings[-1].measured_at)
+
     async def test_network_failure_and_expired_credentials_differ(self):
         coordinator = ScaleCoordinator(self.hass, self.entry)
         coordinator.client.reports = Mock(side_effect=NetworkError)

@@ -1,0 +1,15 @@
+import_history:
+  name: 导入历史称重
+  description: 将指定人员的云端历史按称重时间写入已有指标实体，当前值保持最新一次。历史仍受 HA 的记录保留期限影响。
+  fields:
+    entry_id:
+      name: 体重秤集成
+      required: true
+      selector:
+        config_entry:
+          integration: xiaomi_scale_cloud
+    profile_name:
+      name: 人员姓名
+      required: true
+      selector:
+        text:

@@ -89,6 +89,7 @@ class PersonReport:
     name: str
     measurement: Measurement
     modern_id: str | None = None
+    measurements: tuple[Measurement, ...] = ()
 
 
 def parse_measurement(row):
@@ -223,6 +224,7 @@ class ScaleClient:
         """读取所选设备各人的最新报告；后续轮询只扫描新增记录。"""
         found = {}
         modern_ids = {}
+        measurements = {}
         before = int(time.time() * 1000)
         for _ in range(50):
             rows = self.page(before)
@@ -239,6 +241,7 @@ class ScaleClient:
                         raise ProtocolError()
                     modern_ids[pid] = modern_id
                 report = PersonReport(str(body["user"].get("name") or f"用户 {pid}"), parse_measurement(row), modern_id)
+                measurements.setdefault(pid, {})[report.measurement.measured_at] = report.measurement
                 if pid not in found or report.measurement.measured_at > found[pid].measurement.measured_at:
                     found[pid] = report
             if len(rows) < 20:
@@ -257,7 +260,13 @@ class ScaleClient:
             raise ProtocolError()
         if not found and since is None:
             raise NoMeasurements()
-        return found
+        return {
+            pid: PersonReport(
+                report.name, report.measurement, report.modern_id,
+                tuple(measurements[pid][at] for at in sorted(measurements[pid])),
+            )
+            for pid, report in found.items()
+        }
 
     def profiles(self):
         found = {}

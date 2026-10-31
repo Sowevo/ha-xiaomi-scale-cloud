@@ -16,6 +16,7 @@ LOGGER = logging.getLogger(__name__)
 class ScaleCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry):
         self.entry = entry
+        self.history_entities = set()
         self.client = ScaleClient(entry.data["credential"], entry.data["region"], entry.data["model"])
         super().__init__(hass, LOGGER, name=DOMAIN, config_entry=entry,
                          update_interval=timedelta(minutes=entry.options.get("interval", DEFAULT_INTERVAL)),

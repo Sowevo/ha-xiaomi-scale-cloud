@@ -5,6 +5,7 @@ from homeassistant.helpers import device_registry as dr
 
 from .coordinator import ScaleCoordinator
 from .entity import scale_device_info
+from .history import async_setup_history_service
 
 PLATFORMS = [Platform.SENSOR, Platform.BUTTON]
 
@@ -17,6 +18,7 @@ async def async_setup_entry(hass, entry):
         await hass.async_add_executor_job(coordinator.client.close)
         raise
     entry.runtime_data = coordinator
+    async_setup_history_service(hass)
     dr.async_get(hass).async_get_or_create(config_entry_id=entry.entry_id, **scale_device_info(entry))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_options_updated))

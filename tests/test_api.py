@@ -75,6 +75,13 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(set(devices["a"]), {"did", "model", "name"})
         self.client._call.assert_called_once_with("/home/device_list", {"getVirtualModel": False, "getHuamiDevices": 1})
 
+    def test_reports_keep_each_measurement_in_time_order(self):
+        rows = [record(timestamp=1793398833000 + i * 60000, weight=str(70 + i)) for i in range(3)]
+        self.client.page = Mock(return_value=[rows[2], rows[0], rows[1], rows[1]])
+        report = self.client.reports("test-scale")["1"]
+        self.assertEqual([m.values["weight"] for m in report.measurements], [70, 71, 72])
+        self.assertEqual(report.measurement, report.measurements[-1])
+
     def test_reports_collect_all_people_across_pages(self):
         self.client.page = Mock(side_effect=[
             [record(pid=1) for _ in range(20)],

@@ -28,7 +28,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         for pid, report in coordinator.data.items():
             device = registry.async_get_device(identifiers={(DOMAIN, f"{scale_identity(entry)}_{pid}")})
             if device is not None:
-                name = f"{report.name} · {entry.data.get('device_name') or entry.data['model']}"
+                name = report.name
                 if device.name != name:
                     registry.async_update_device(device.id, name=name)
 

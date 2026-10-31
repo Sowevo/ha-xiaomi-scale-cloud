@@ -75,6 +75,13 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(set(devices["a"]), {"did", "model", "name"})
         self.client._call.assert_called_once_with("/home/device_list", {"getVirtualModel": False, "getHuamiDevices": 1})
 
+    def test_excluded_person_is_skipped_before_measurement_parsing(self):
+        self.client.page = Mock(return_value=[record(pid=1, weight="invalid"), record(pid=2)])
+        result = self.client.reports("test-scale", excluded_profiles={"1"})
+        self.assertEqual(set(result), {"2"})
+        self.client.page = Mock(return_value=[record(pid=1, weight="invalid")])
+        self.assertEqual(self.client.reports("test-scale", excluded_profiles={"1"}), {})
+
     def test_reports_keep_each_measurement_in_time_order(self):
         rows = [record(timestamp=1793398833000 + i * 60000, weight=str(70 + i)) for i in range(3)]
         self.client.page = Mock(return_value=[rows[2], rows[0], rows[1], rows[1]])

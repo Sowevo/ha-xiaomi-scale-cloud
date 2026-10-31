@@ -16,18 +16,28 @@ LOGGER = logging.getLogger(__name__)
 class ScaleCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry):
         self.entry = entry
+        self.applied_options = dict(entry.options)
         self.history_entities = set()
         self.client = ScaleClient(entry.data["credential"], entry.data["region"], entry.data["model"])
+        interval = entry.options.get("interval", DEFAULT_INTERVAL)
         super().__init__(hass, LOGGER, name=DOMAIN, config_entry=entry,
-                         update_interval=timedelta(minutes=entry.options.get("interval", DEFAULT_INTERVAL)),
+                         update_interval=timedelta(minutes=interval) if interval else None,
                          always_update=False)
 
     async def _async_update_data(self):
         try:
             previous = self.data or {}
             since = max((int(p.measurement.measured_at.timestamp() * 1000) for p in previous.values()), default=None)
-            incoming = await self.hass.async_add_executor_job(self.client.reports, self.entry.data["did"], since)
-            merged = dict(previous)
+            excluded = set(self.entry.options.get("excluded_profiles", []))
+            args = (self.entry.data["did"], since, excluded) if excluded else (self.entry.data["did"], since)
+            incoming = await self.hass.async_add_executor_job(self.client.reports, *args)
+            profiles = dict(self.entry.data.get("profiles", {}))
+            profiles.update({pid: report.name for pid, report in incoming.items()})
+            if profiles != self.entry.data.get("profiles", {}):
+                self.hass.config_entries.async_update_entry(
+                    self.entry, data={**self.entry.data, "profiles": profiles},
+                )
+            merged = {pid: report for pid, report in previous.items() if pid not in excluded}
             for pid, report in incoming.items():
                 if pid in merged and merged[pid].modern_id and report.modern_id and merged[pid].modern_id != report.modern_id:
                     raise ProtocolError()

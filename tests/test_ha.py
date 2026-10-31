@@ -5,7 +5,7 @@ import threading
 import tempfile
 import unittest
 from types import MappingProxyType
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry, ConfigEntries
@@ -13,7 +13,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.xiaomi_scale_cloud.api import parse_measurement, PersonReport
-from custom_components.xiaomi_scale_cloud.config_flow import ScaleConfigFlow
+from custom_components.xiaomi_scale_cloud.config_flow import ScaleConfigFlow, ScaleOptionsFlow
 from custom_components.xiaomi_scale_cloud.entity import scale_device_info
 from custom_components.xiaomi_scale_cloud.coordinator import ScaleCoordinator
 from custom_components.xiaomi_scale_cloud.sensor import ScaleSensor, MeasurementTime, async_setup_entry as setup_sensors
@@ -99,6 +99,70 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].data["new_state"].last_updated, readings[-1].measured_at)
 
+    async def test_interval_form_uses_number_selector_and_validates_zero(self):
+        from homeassistant.helpers.selector import NumberSelector
+        flow = ScaleOptionsFlow()
+        flow.hass = self.hass
+        with patch.object(ScaleOptionsFlow, "config_entry", new_callable=PropertyMock, return_value=self.entry):
+            result = await flow.async_step_init()
+            validator = next(iter(result["data_schema"].schema.values()))
+            self.assertIsInstance(validator, NumberSelector)
+            self.assertEqual(validator.serialize()["selector"]["number"]["mode"], "box")
+            self.assertEqual((await flow.async_step_init({"interval": 0}))["data"]["interval"], 0)
+            for value in (1, 4, 5.5, -1, 1441):
+                result = await flow.async_step_init({"interval": value})
+                self.assertEqual(result["errors"]["interval"], "invalid_interval")
+
+    async def test_people_options_remember_exclusions_and_restore(self):
+        self.hass.config_entries.async_update_entry(
+            self.entry, data={**self.entry.data, "profiles": {"1": "甲", "2": "乙", "3": "新人"}},
+            options={"interval": 0, "excluded_profiles": ["2", "old-id"]},
+        )
+        flow = ScaleOptionsFlow()
+        flow.hass = self.hass
+        with patch.object(ScaleOptionsFlow, "config_entry", new_callable=PropertyMock, return_value=self.entry):
+            result = await flow.async_step_init()
+            selected = next(k.default() for k in result["data_schema"].schema if k.schema == "profiles")
+            self.assertEqual(selected, ["1", "3"])
+            result = await flow.async_step_init({"interval": 0, "profiles": ["1", "2", "3"]})
+            self.assertEqual(result["data"]["excluded_profiles"], ["old-id"])
+            result = await flow.async_step_init({"interval": 0, "profiles": []})
+            self.assertEqual(set(result["data"]["excluded_profiles"]), {"1", "2", "3", "old-id"})
+
+    async def test_excluded_people_skipped_but_new_people_discovered(self):
+        self.hass.config_entries.async_update_entry(self.entry, options={"excluded_profiles": ["2"]})
+        coordinator = ScaleCoordinator(self.hass, self.entry)
+        coordinator.client.reports = Mock(return_value={"3": PersonReport("新人", parse_measurement(record(pid=3)))})
+        result = await coordinator._async_update_data()
+        self.assertEqual(set(result), {"3"})
+        coordinator.client.reports.assert_called_once_with("test-scale", None, {"2"})
+        self.assertEqual(self.entry.data["profiles"]["3"], "新人")
+
+    async def test_people_device_disable_and_restore_keep_device_id(self):
+        from homeassistant.helpers import device_registry as dr
+        from custom_components.xiaomi_scale_cloud import sync_profile_devices
+        from custom_components.xiaomi_scale_cloud.entity import scale_identity
+        self.hass.config_entries.async_update_entry(self.entry, data={**self.entry.data, "profiles": {"1": "甲"}})
+        dr.async_setup(self.hass)
+        await dr.async_load(self.hass)
+        registry = dr.async_get(self.hass)
+        device = registry.async_get_or_create(config_entry_id=self.entry.entry_id,
+            identifiers={("xiaomi_scale_cloud", f"{scale_identity(self.entry)}_1")}, name="甲")
+        self.hass.config_entries.async_update_entry(self.entry, options={"excluded_profiles": ["1"]})
+        sync_profile_devices(self.hass, self.entry)
+        self.assertEqual(registry.async_get(device.id).disabled_by, dr.DeviceEntryDisabler.INTEGRATION)
+        self.hass.config_entries.async_update_entry(self.entry, options={"excluded_profiles": []})
+        sync_profile_devices(self.hass, self.entry)
+        self.assertIsNone(registry.async_get(device.id).disabled_by)
+
+    async def test_zero_interval_disables_polling_but_allows_manual_refresh(self):
+        self.hass.config_entries.async_update_entry(self.entry, options={"interval": 0})
+        coordinator = ScaleCoordinator(self.hass, self.entry)
+        self.assertIsNone(coordinator.update_interval)
+        coordinator.async_request_refresh = AsyncMock()
+        await RefreshButton(coordinator).async_press()
+        coordinator.async_request_refresh.assert_awaited_once()
+
     async def test_network_failure_and_expired_credentials_differ(self):
         coordinator = ScaleCoordinator(self.hass, self.entry)
         coordinator.client.reports = Mock(side_effect=NetworkError)
@@ -134,6 +198,11 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
             result = await flow.async_step_login_complete()
             self.assertEqual(result["step_id"], "device")
             result = await flow.async_step_device({"device": "test-scale"})
+            self.assertEqual(result["step_id"], "people")
+            field = next(iter(result["data_schema"].schema))
+            self.assertEqual(set(field.default()), {"1", "2"})
+            result = await flow.async_step_people({"profiles": ["1"]})
+            self.assertEqual(result["options"]["excluded_profiles"], ["2"])
             self.assertEqual(result["type"], "create_entry")
             self.assertNotIn("profile_id", result["data"])
             self.assertEqual(set(flow.reports), {"1", "2"})

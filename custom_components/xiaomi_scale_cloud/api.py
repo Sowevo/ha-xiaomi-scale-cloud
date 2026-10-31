@@ -220,7 +220,7 @@ class ScaleClient:
             raise ProtocolError()
         return rows
 
-    def reports(self, did, since=None):
+    def reports(self, did, since=None, excluded_profiles=()):
         """读取所选设备各人的最新报告；后续轮询只扫描新增记录。"""
         found = {}
         modern_ids = {}
@@ -233,6 +233,8 @@ class ScaleClient:
                     continue
                 body = row_body(row)
                 pid = profile_id(body)
+                if pid in excluded_profiles:
+                    continue
                 modern_id = body["user"].get("id")
                 if modern_id is not None:
                     modern_id = str(modern_id)
@@ -258,7 +260,7 @@ class ScaleClient:
         else:
             # 达到上限时明确失败，不能把不完整人员列表当成全部成功。
             raise ProtocolError()
-        if not found and since is None:
+        if not found and since is None and not excluded_profiles:
             raise NoMeasurements()
         return {
             pid: PersonReport(

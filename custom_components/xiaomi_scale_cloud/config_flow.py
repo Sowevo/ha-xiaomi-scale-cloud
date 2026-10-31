@@ -1,5 +1,6 @@
 """米家二维码登录与设备选择。"""
 
+from collections import Counter
 import asyncio
 import logging
 import time
@@ -10,6 +11,9 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import UnknownFlow
 from homeassistant.helpers.network import get_url, NoURLAvailableError
+from homeassistant.helpers.selector import NumberSelector, NumberSelectorConfig, NumberSelectorMode
+
+from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig, SelectSelectorMode
 
 from .api import QrLogin, ScaleClient, NoMeasurements
 from ._vendor.errors import S400Error, LoginExpired, LoginCancelled, AuthenticationError, NetworkError, ProtocolError
@@ -201,9 +205,22 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         identity = f"{self.credential['userId']}_{self.region}_{did}"
         await self.async_set_unique_id(identity)
         self._abort_if_unique_id_configured()
-        return self.async_create_entry(title=self.device["name"], data={
+        return await self.async_step_people()
+
+    async def async_step_people(self, user_input=None):
+        profiles = {pid: report.name for pid, report in self.reports.items()}
+        if user_input is None:
+            return self.async_show_form(step_id="people", data_schema=vol.Schema({
+                vol.Required("profiles", default=list(profiles)): people_selector(profiles),
+            }))
+        selected = set(user_input["profiles"])
+        if not selected <= profiles.keys():
+            return self.async_abort(reason="no_measurements")
+        return self.async_create_entry(title=self.device["name"], options={
+            "excluded_profiles": sorted(profiles.keys() - selected),
+        }, data={
             "credential": self.credential, "region": self.region, "model": self.model,
-            "did": did, "device_name": self.device["name"],
+            "did": self.device["did"], "device_name": self.device["name"], "profiles": profiles,
         })
 
     async def async_step_reauth(self, entry_data):
@@ -238,10 +255,43 @@ class ScaleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self.hass.async_add_executor_job(qr.close)
 
 
+def people_selector(profiles):
+    names = Counter(profiles.values())
+    return SelectSelector(SelectSelectorConfig(
+        options=[{"value": pid, "label": name if names[name] == 1 else f"{name}（{pid}）"} for pid, name in profiles.items()],
+        multiple=True, mode=SelectSelectorMode.DROPDOWN,
+    ))
+
+
 class ScaleOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
+        errors = {}
+        profiles = dict(self.config_entry.data.get("profiles", {}))
+        coordinator = getattr(self.config_entry, "runtime_data", None)
+        if coordinator and coordinator.data:
+            profiles.update({pid: report.name for pid, report in coordinator.data.items()})
+        excluded = set(self.config_entry.options.get("excluded_profiles", []))
+        selected = [pid for pid in profiles if pid not in excluded]
+        interval = self.config_entry.options.get("interval", DEFAULT_INTERVAL)
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            interval = user_input.get("interval")
+            if (
+                isinstance(interval, (int, float)) and not isinstance(interval, bool)
+                and (interval == 0 or 5 <= interval <= 1440)
+                and int(interval) == interval
+            ):
+                selected = user_input.get("profiles", selected)
+                if set(selected) <= profiles.keys():
+                    return self.async_create_entry(title="", data={
+                        **self.config_entry.options, "interval": int(interval),
+                        "excluded_profiles": sorted((excluded - profiles.keys()) | (profiles.keys() - set(selected))),
+                    })
+                errors["profiles"] = "invalid_profiles"
+            if not errors:
+                errors["interval"] = "invalid_interval"
         return self.async_show_form(step_id="init", data_schema=vol.Schema({
-            vol.Required("interval", default=self.config_entry.options.get("interval", DEFAULT_INTERVAL)): vol.All(vol.Coerce(int), vol.Range(min=5, max=1440)),
-        }))
+            vol.Required("interval", default=interval): NumberSelector(NumberSelectorConfig(
+                min=0, max=1440, step=1, mode=NumberSelectorMode.BOX,
+            )),
+            vol.Required("profiles", default=selected): people_selector(profiles),
+        }), errors=errors)

@@ -14,7 +14,7 @@ def scale_device_info(entry):
     return DeviceInfo(
         identifiers={(DOMAIN, scale_identity(entry))},
         name=entry.data.get("device_name") or MODELS.get(entry.data["model"], entry.data["model"]),
-        manufacturer="Xiaomi", model=entry.data["model"],
+        manufacturer="Xiaomi", model=MODELS.get(entry.data["model"], entry.data["model"]),
     )
 
 
@@ -38,7 +38,7 @@ class ScaleEntity(CoordinatorEntity):
         report = self.coordinator.data[self.profile_id]
         return DeviceInfo(
             identifiers={(DOMAIN, f"{parent}_{self.profile_id}")},
-            name=f"{report.name} · {entry.data.get('device_name') or MODELS.get(entry.data['model'], entry.data['model'])}",
-            manufacturer="Xiaomi", model=entry.data["model"],
+            name=report.name,
+            manufacturer=None, model="称重档案",
             via_device=(DOMAIN, parent),
         )

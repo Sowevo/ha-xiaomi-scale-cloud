@@ -14,6 +14,7 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.xiaomi_scale_cloud.api import parse_measurement, PersonReport
 from custom_components.xiaomi_scale_cloud.config_flow import ScaleConfigFlow
+from custom_components.xiaomi_scale_cloud.entity import scale_device_info
 from custom_components.xiaomi_scale_cloud.coordinator import ScaleCoordinator
 from custom_components.xiaomi_scale_cloud.sensor import ScaleSensor, MeasurementTime, async_setup_entry as setup_sensors
 from custom_components.xiaomi_scale_cloud.button import RefreshButton
@@ -112,7 +113,8 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.hass.config_entries.async_update_entry(self.entry, data={**self.entry.data, "model": "example.scales.future"})
         coordinator = ScaleCoordinator(self.hass, self.entry)
         coordinator.async_set_updated_data({"1": PersonReport("测试", parse_measurement(record()))})
-        self.assertEqual(ScaleSensor(coordinator, "weight", "1").device_info["model"], "example.scales.future")
+        self.assertEqual(scale_device_info(self.entry)["model"], "example.scales.future")
+        self.assertEqual(ScaleSensor(coordinator, "weight", "1").device_info["model"], "称重档案")
 
     async def test_empty_device_list_is_reported(self):
         flow = ScaleConfigFlow()
